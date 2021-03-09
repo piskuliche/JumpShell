@@ -1,6 +1,8 @@
 Program JumpSolv
+    use, intrinsic :: iso_fortran_env
     implicit none
-    integer :: i, j, k, ntimes, t, sk,cnt,to,n_tos
+    integer :: i, j, k, ntimes, t, sk, cnt
+    integer :: ncorr, to,ntos, sep
     integer :: acry_natms, nwater, nacryl
     real :: volume,maxdrsq, doh1, doh2
     integer, dimension(100) :: h2o_count, ad,h1, h2, hbond_count
@@ -9,15 +11,16 @@ Program JumpSolv
     character(len=2) :: ctmp2
     character(len=3) :: ctmp, ctmp3
     character(len=20) :: nfile
-    integer, dimension(5000) :: hbondpartners,init_hbonds
-    integer, dimension(5000000,5000) :: hbondlist
+    integer, dimension(5000) :: hbondpartners,init_hbonds,acryhbonds
+    integer, dimension(1000000,5000) :: hbondlist, acryhbondlist
     real, dimension(500000,1000,3) :: eoh1, eoh2
     real, dimension(3) :: L, droh1, droh2
     real, dimension(1000,3) :: rO, r1, r2
     real, dimension(100,100,3) :: racryl
     real, dimension(5000) :: crp
     
-    
+    write(*,*) "Begin Program: Jumps-Within-Shell"
+    flush(OUTPUT_UNIT) 
     ! Set atomkey to 0.0  
     criteria=0.0
     rO=0.0; r1 = 0.0; r2 = 0.0
@@ -27,7 +30,8 @@ Program JumpSolv
     criteria=0.0
     h1 = 0; h2 = 0; ad = 0
     eoh1 = 0; eoh2 = 0
-    hbondlist = 0; hbondpartners=0
+    hbondlist = 0; hbondpartners=0; acryhbondlist=0; acryhbonds=0
+    ntos=100; sep=10; ncorr=2000
     
     ! Reads the input file
     open(10,file='solv.in',status='old')
@@ -88,56 +92,83 @@ Program JumpSolv
         eoh2(t,i,:)  = droh2(:)/doh2
       enddo
       hbondpartners=0
-      call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2, hbondpartners)
+      call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2,critsq, hbondpartners,acryhbonds)
       hbondlist(t,:)=hbondpartners(:)
+      acryhbondlist(t,:)=acryhbonds(:)
     enddo! t loop
     close(12)
-
+    call TCFLoop(ntos,sep,hbondlist,acryhbondlist,eoh1, eoh2)
 End Program   
 
-Subroutine TCFLoop(ntos,sep,hbondlist,eoh1,eoh2)
+Subroutine TCFLoop(ntos,sep,hbondlist,acryhbondlist,eoh1,eoh2)
   implicit none
-  integer :: to, t, torigin
+  integer :: to, t, torigin,ntos,sep,ncorr
   integer :: i, j, k
   integer, dimension(5000) :: hbondpartners,init_hbonds,samehbond,laststep
-  integer, dimension(5000000,5000) :: hbondlist
-  real, dimension(5000) :: crp
+  integer, dimension(5000000,5000) :: hbondlist,acryhbondlist
+  integer, dimension(5000) :: crptmp,acrycrptmp
+  real, dimension(5000) :: crp, acrycrp
+  real, dimension(500000,1000,3) :: eoh1, eoh2
+  ! This calculates the actual TCFs that this code should calculate.
+  ! It is my hope that writing it this way means that if the reading code is
+  ! super slow, we could write stuff to a file and just read it using this code
+  ! instead. 
 
-  crp=0
+  ! Zero values that need to be zeroed
+  crp=0; acrycrp=0
   laststep=1
+  
+  ! Loop over time origins
   do to=1,ntos
     torigin = to*sep
     init_hbonds(:)=hbondlist(torigin,:)
-    do t=torigin,torigin+ncorr
+    crptmp=0;acrycrptmp=0 ! These need to be zero every time origin
+    do t=torigin,torigin+ncorr ! Loops over times
       hbondpartners(:)=hbondlist(t,:)
-      checkhbonds(init_hbonds,hbondpartners,laststep,samehbond)
+      call CheckPartners(init_hbonds,hbondpartners,laststep,samehbond)
       laststep(:)=samehbond(:) ! Sets the previous step
+
       ! Calculate indiv CRP
       do j=1,5000
         if (samehbond(j) .eq. 1) then
-          crp(t) = crp(t) + 1
+          crptmp(t) = crptmp(t) + 1
+          acrycrptmp(t) = acrycrptmp(t) + 1*acryhbondlist(t,j)
         endif
       enddo
+
       ! Need to calculate indiv P2(t) as well
       ! Need to sum stuff - should also consider whether I should
       ! Only calculate P2 if hbonds at time t (or at t0)
     enddo
+
+    crp(:)=crp(:)+crptmp(:)/crp(1)
+    acrycrp(:)=acrycrp(:)+acrycrp(:)/acrycrp(1)
   enddo
+
+  ! This writes to a file
+  open(13,file="jumptst.dat")
+  do t=1,ncorr
+    write(13,*) t, crp(:)/real(ntos), acrycrp(:)/real(ntos)
+  enddo
+  close(13)
 
 End Subroutine
 
 
-Subroutine CheckPartners(init_partners,hbondpartners,laststep,samehbond)
+Subroutine CheckPartners(init_partners,hbondpartners,laststep,samehbonds)
   implicit none
   integer :: i, j, k, cnt
-  integer, dimension(5000) :: init_partners,hbondpartners,samehbond,laststep
+  integer, dimension(5000) :: init_partners,hbondpartners,samehbonds,laststep
+  ! This is a basic code to just check whether the h-bond is the same or
+  ! different over the loop.
+
   samehbonds = 0 ! 0 if exchanged, 1 if same
   ! Note - laststep is exactly the same, just from the previous step
   do i=1,5000
     ! Check that to is not zero)
-    if ( init_partners .eq. 0 .or. laststep(i) .eq. 0 ) then
+    if ( init_partners(i) .eq. 0 .or. laststep(i) .eq. 0 ) then
       ! Doesn't count it - not hbonded at t=0 or if TCF is already 0
-    else if ( hbondpartners .eq. 0 ) then
+    else if ( hbondpartners(i) .eq. 0 ) then
       ! Counts it as unbroken - transient break
       samehbonds(i)=1
     else
@@ -152,14 +183,14 @@ Subroutine CheckPartners(init_partners,hbondpartners,laststep,samehbond)
 End Subroutine
 
 
-Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq, hbondpartners)
+Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq, hbondpartners,acryhbond)
   implicit none
   integer :: i, j, k, cnt, presenthbnd,acryindex
   integer :: nacryl, nwater, acry_natms
-  integer :: oh1, oh2
+  integer :: oh1, oh2, oh1index, oh2index
   integer, dimension(100) :: h1, h2
   integer, dimension(5000) :: hbondpartners
-  integer, dimension(1000) :: acryhbond
+  integer, dimension(5000) :: acryhbond
   real :: ang, dOO, dOx, dHX1, dHX2, dHO1, dHO2
   real :: rOXmax, rOOmax, rHOmax, rHXmax, angmax
   real, dimension(3) :: L
@@ -172,19 +203,26 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
   ! It stores this information in hbondpartners
   ! It calculates all the hydrogen bonds in the system (water-water,
   ! acryl->water, and water->acryl
-  ! Note - acryhbond has nwater elements:
+  ! Note - acryhbond has the same dimensionality as hbondpartners:
   !   These are 1 if hbonded to an acryl
   !   or 0 otherwise
 
 
-  hbondpartners=0 
+  hbondpartners=0
+
+  ! H-bond Criteria 
   rOXmax = 3.5; rHXmax = 2.45; angmax =30
   rOOmax = 3.1; rHOmax = 2.1
+  ! END H-bond Criteria
+
+
   hbondpartners=0
   acryhbond=0
   do k=1,nwater
-    ! Checks Donations to Water j
+    oh1index=2*k-1
+    oh2index=2*k
     oh1=0;oh2=0
+    ! Water-Water H-Bonds
     do j=1,nwater
       if ( k .ne. j ) then
         if (oh1 .eq. 0 .or. oh2 .eq. 0) then
@@ -219,7 +257,7 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
       if ( critsq(i) .ne. 0.0 ) then
         do j=1, nacryl
           ! This index starts past the number of OHs available
-          acryindex=j*acry_natms + i + nwater*2
+          acryindex=(j-1)*acry_natms + i + nwater*2
           drOX(:)=rO(k,:)-racryl(i,j,:) - L(:)*anint((rO(k,:)-racryl(i,j,:))/L(:))
           dOX = sqrt(dot_product(drOX,drOX))
           if  ( dOX < rOXmax ) then
@@ -235,7 +273,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
               ang = acosd(dot_product(eox,ehx1))
               if ( ang < angmax ) then
                 oh1 = acryindex
-                acryhbond(k)=1 ! Water molecule is hbonded to acry
+                acryhbond(oh1index)=1 ! Water molecule is hbonded to acry
+                acryhbond(oh2index)=1 ! Water molecule is Hbonded to acry
               endif
             endif
             if ( dHX2 .lt. rHXmax ) then
@@ -243,7 +282,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
               ang = acosd(dot_product(eox,ehx2))
               if ( ang < angmax ) then
                 oh2 = acryindex
-                acryhbond(k)=1 ! Water molecule is hbonded to acry
+                acryhbond(oh1)=1 ! Water molecule is hbonded to acry
+                acryhbond(oh2)=1 ! Water " ...  "
               endif
             endif
           endif !  ( dOX < rOXmax )
@@ -257,7 +297,7 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
               ang = acosd(dot_product(-eox,eho1))
               if ( ang < angmax ) then
                 hbondpartners(acryindex)=k
-                acryhbond(k)=1 ! Water molecule is hbonded toacry
+                acryhbond(acryindex)=1 ! Water molecule is hbonded toacry
               endif
             endif
           endif
@@ -269,7 +309,7 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
               ang = acosd(dot_product(-eox,eho2))
               if ( ang < angmax ) then
                 hbondpartners(acryindex)=k
-                acryhbond(k)=1 ! Water molecule is hbonded to acry
+                acryhbond(acryindex)=1 ! Water molecule is hbonded to acry
               endif
             endif
           endif
