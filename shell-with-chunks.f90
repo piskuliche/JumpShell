@@ -2,7 +2,7 @@ Program JumpSolv
     use, intrinsic :: iso_fortran_env
     implicit none
     integer :: i, j, k, ntimes, t, sk, cnt
-    integer :: ncorr, to,ntos, sep
+    integer :: ncorr, to,ntos,totalconfigs, sep
     integer :: acry_natms, nwater, nacryl
     real :: volume,maxdrsq, doh1, doh2
     integer, dimension(100) :: h2o_count, ad,h1, h2, hbond_count
@@ -22,16 +22,20 @@ Program JumpSolv
     critsq=0.0
     criteria=0.0
     h1 = 0; h2 = 0; ad = 0
-    ntos=100; sep=10; ncorr=2000
+    ntos=100; sep=10; ncorr=2000; totalconfigs=100000
     
     ! Reads the input file
-    open(10,file='solv.in',status='old')
+    open(10,file='solvshell.in',status='old')
     read(10,*)
     read(10,*) nfile
     read(10,*) 
     read(10,*) volume, ntimes
     read(10,*)
     read(10,*) nwater, nacryl
+    read(10,*) 
+    read(10,*) totalconfigs, sep, ncorr
+
+    ntos=(totalconfigs-ncorr)/sep
 
     L(1)=volume ** (1.0/3.0)
     L(2)=L(1)
@@ -205,11 +209,20 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq, ntos,sep,ncorr)
   crp(:)=real(crp(:))/real(ntos)
   acrycrp(:)=real(acrycrp(:))/real(ntos)
   ! This writes to a file
-  open(13,file="jumptst.dat")
+  open(13,file="crp.dat")
+  open(14,file="hbondcrp.dat")
+  open(15,file="c2.dat")
+  open(16,file="hbondc2.dat")
   do t=1,ncorr
-    write(13,*) t, crp(t), acrycrp(t),c2(t), acryc2(t)
+    write(13,*) t, crp(t)
+    write(14,*) t, acrycrp(t)
+    write(15,*) t, c2(t) 
+    write(16,*) t, acryc2(t)
   enddo
   close(13)
+  close(14)
+  close(15)
+  close(16)
 
 End Subroutine
 
