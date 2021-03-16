@@ -61,20 +61,21 @@ Program JumpSolv
 
     ! Opens the trajectory
     open(12,file=nfile, status='old')
-    call TCFLoop(L, nacryl, acry_natms, nwater, critsq, ntos,sep,ncorr)
+    call TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncorr)
+    write(*,*) "End Program"
     close(12)
 
 End Program   
 
-Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq, hbondpartners, acryhbonds,e)
+Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq,ad,h1,h2, hbondpartners, acryhbonds,e,siteloc)
   implicit none
   integer :: i, j, k
   integer :: sk, nacryl, acry_natms, nwater
   real    :: d1, d2
   character(len=3) :: ctmp
   
-  integer, dimension(100) :: h1, h2
-  integer, dimension(5000) :: hbondpartners,acryhbonds
+  integer, dimension(100) :: h1, h2, ad
+  integer, dimension(5000) :: hbondpartners,acryhbonds,siteloc
 
   real, dimension (100) :: critsq
 
@@ -86,6 +87,7 @@ Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq, hbondpartners, acryhb
   real, dimension(3) :: L, dr1, dr2
   
   e1=0; e2=0; e=0
+  siteloc=0
   ! Skip Header
   do sk=1,9
     read(12,*)
@@ -114,43 +116,50 @@ Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq, hbondpartners, acryhb
     e(2*i,:) = e2(i,:)
   enddo
   hbondpartners=0;acryhbonds=0
-  call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2,critsq, hbondpartners,acryhbonds)
+  call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2,critsq,ad, hbondpartners,acryhbonds,siteloc)
 
 End Subroutine Read_Frame
 
-Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq, ntos,sep,ncorr)
+Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncorr)
   implicit none
   integer :: to, t, torigin,ntos,sep,ncorr
-  integer :: i, j, k
+  integer :: i, j, k, chkindex
   integer :: sk, nacryl, acry_natms, nwater
-  integer :: count_acryc2
+  integer :: count_crp
+  integer :: count_acryc2, count_acryc2tos, count_acrycrp, count_acrycrptos
   real :: dp
   
-  integer, dimension(5000) :: hbondpartners, acryhbonds, init_hbonds,samehbond,laststep
+  integer, dimension(5000) :: hbondpartners, acryhbonds, init_hbonds,samehbond,laststep,siteloc
   real, dimension(5000,3) :: e
   
   real, dimension(3) :: L
+  integer, dimension(100) :: ad, h1, h2
   real, dimension (100) :: critsq
 
   integer, allocatable :: crptmp(:),acrycrptmp(:)
   real, allocatable :: crp(:), acrycrp(:), c2(:), c2tmp(:)
   real, allocatable :: acryc2(:), acryc2tmp(:)
-  integer, allocatable :: hbondlist(:,:), acryhbondlist(:,:)
+  integer, allocatable :: hbondlist(:,:), acryhbondlist(:,:), sitelist(:,:)
   real, allocatable :: elist(:,:,:)
+  real, allocatable :: sitecrp(:,:), sitecrptmp(:,:)
 
   allocate( hbondlist(ncorr,5000) )
-  allocate( acryhbondlist(ncorr,5000) )
+  allocate( acryhbondlist(ncorr,5000), sitelist(ncorr,5000) )
   allocate( crptmp(ncorr), acrycrptmp(ncorr), crp(ncorr), acrycrp(ncorr), c2tmp(ncorr), c2(ncorr) ) 
   allocate( acryc2(ncorr), acryc2tmp(ncorr) )
   allocate( elist(ncorr,5000,3) )
+  allocate( sitecrp(ncorr,acry_natms), sitecrptmp(ncorr,acry_natms) )
   write(*,*) "Beginning TCF Loop"
   write(*,*) "Ncorr", ncorr
   write(*,*) "ntos", ntos
   write(*,*) "sep", sep
   ! Zero values that need to be zeroed
-  hbondlist=0; acryhbondlist=0; elist=0.0
+  hbondlist=0; acryhbondlist=0; elist=0.0;sitelist=0
   crp=0; acrycrp=0
   c2=0; acryc2=0
+  sitecrp=0; siteloc=0; sitelist=0
+  count_crp=0
+  count_acryc2tos=0;  count_acrycrptos = 0
   
   ! Loop over time origins
   do to=1,ntos
@@ -159,38 +168,44 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq, ntos,sep,ncorr)
 
     ! Zeros for time origin
     crptmp=0;acrycrptmp=0; c2tmp=0; acryc2tmp=0 ! These need to be zero every time
+    sitecrptmp=0
     laststep=1
     if (to .ne. 1) then ! Shifts by sep
       hbondlist = cshift(hbondlist,sep,dim=1)
       acryhbondlist = cshift(acryhbondlist,sep,dim=1)
       elist = cshift(elist,sep,dim=1)
+      sitelist = cshift(sitelist,sep,dim=1)
     endif
-
+    count_acryc2=0; count_acrycrp=0; count_crp=0
     do t=1,ncorr ! Loops over times
       if (to .eq. 1 .or. t .gt. ncorr-sep) then ! Either reads in the data
-        call Read_Frame(L, nacryl, acry_natms, nwater, critsq, hbondpartners, acryhbonds,e)
+        call Read_Frame(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, hbondpartners, acryhbonds,e,siteloc)
         elist(t,:,:)=e(:,:)
         hbondlist(t,:)=hbondpartners(:)
         acryhbondlist(t,:)=acryhbonds(:)
+        sitelist(t,:)=siteloc(:)
       endif
       call CheckPartners(hbondlist(1,:),hbondlist(t,:),laststep,samehbond)
       laststep(:)=samehbond(:) ! Sets the previous step
 
-      ! Calculate indiv CRP
-      count_acryc2=0
+      ! Calculate indiv CRP + C2
       do j=1,5000
         if (j .le. nwater*2) then
           dp = dot_product(elist(t,j,:),elist(1,j,:))
           c2tmp(t) = c2tmp(t)+0.5*(3.0*dp**2.-1.0)
-          acryc2tmp(t) = acryc2tmp(t) + 0.5*(3.0*dp**2.-1.0)*acryhbondlist(t,j)
-          count_acryc2=count_acryc2+acryhbondlist(t,j)
+          acryc2tmp(t) = acryc2tmp(t) + 0.5*(3.0*dp**2.-1.0)*acryhbondlist(1,j)
+          if ( t .eq. 1) count_acryc2=count_acryc2+acryhbondlist(1,j)
         endif
         if (samehbond(j) .eq. 1) then
           crptmp(t) = crptmp(t) + 1
-          acrycrptmp(t) = acrycrptmp(t) + acryhbondlist(t,j)
+          acrycrptmp(t) = acrycrptmp(t) + acryhbondlist(1,j)
+          if ( t .eq. 1) then
+            count_crp = count_crp + 1
+            count_acrycrp = count_acrycrp + acryhbondlist(1,j)
+          endif
+          if (sitelist(t,j) .ne. 0) sitecrptmp(t,sitelist(t,j)) = sitecrptmp(t,sitelist(t,j)) + acryhbondlist(1,j)
         endif
       enddo
-
       ! Need to calculate indiv P2(t) as well
       ! Need to sum stuff - should also consider whether I should
       ! Only calculate P2 if hbonds at time t (or at t0)
@@ -198,31 +213,47 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq, ntos,sep,ncorr)
     ! Calc C2 Correlation 
     c2(:)=c2(:) + c2tmp(:)/(real(nwater)*2.0)
     acryc2(:)=acryc2(:) + acryc2tmp(:)/(real(count_acryc2))
+    if ( acryc2tmp(1) .ne. 0.0 ) count_acryc2tos = count_acryc2tos + 1
     ! Calc CRP Correlation
-    crp(:)=crp(:)+real(crptmp(:))/real(crptmp(1))
-    acrycrp(:)=acrycrp(:)+real(acrycrptmp(:))/real(acrycrptmp(1))
+    crp(:)=crp(:)+real(crptmp(:))/real(count_crp)
+    acrycrp(:)=acrycrp(:)+real(acrycrptmp(:))/real(count_acrycrp)
+    if ( acrycrptmp(1) .ne. 0.0 )   count_acrycrptos = count_acrycrptos + 1
+    do k=1,acry_natms
+      if (sitecrptmp(1,k) .ne. 0 ) then 
+        sitecrp(:,k) = sitecrp(:,k) + real(sitecrptmp(:,k))/real(sitecrptmp(1,k))
+      endif
+    enddo
   enddo
+  write(*,*) "Preparing to Dump Final Values"
   ! C2 Norm
+  write(*,*) count_acryc2tos, acryc2(1), count_acrycrptos, acrycrp(1)
   c2(:)=c2(:)/real(ntos)
-  acryc2(:)=acryc2(:)/real(ntos)
+  acryc2(:)=acryc2(:)/real(count_acryc2tos)
   ! CRP Norm
   crp(:)=real(crp(:))/real(ntos)
-  acrycrp(:)=real(acrycrp(:))/real(ntos)
+  acrycrp(:)=real(acrycrp(:))/real(count_acrycrptos)
+  do k=1,acry_natms
+    if ( sitecrp(1,k) .ne. 0 ) sitecrp(:,k)=real(sitecrp(:,k))/real(sitecrp(1,k))
+  enddo
   ! This writes to a file
   open(13,file="crp.dat")
   open(14,file="hbondcrp.dat")
   open(15,file="c2.dat")
   open(16,file="hbondc2.dat")
+  open(17,file="sitecrp.dat")
   do t=1,ncorr
     write(13,*) t, crp(t)
     write(14,*) t, acrycrp(t)
     write(15,*) t, c2(t) 
     write(16,*) t, acryc2(t)
+    write(17,fmt='(100F12.5)') real(t), (sitecrp(t,k), k=1,acry_natms)
   enddo
   close(13)
   close(14)
   close(15)
   close(16)
+  close(17)
+  write(*,*) "End TCF Loop"
 
 End Subroutine
 
@@ -260,14 +291,15 @@ Subroutine CheckPartners(init_partners,t_partners,laststep,samehbonds)
 End Subroutine
 
 
-Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq, hbondpartners,acryhbond)
+Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq,ad, hbondpartners,acryhbond,siteloc)
   implicit none
   integer :: i, j, k, cnt, presenthbnd,acryindex
   integer :: nacryl, nwater, acry_natms
   integer :: oh1, oh2, oh1index, oh2index
-  integer, dimension(100) :: h1, h2
+  integer :: acrydonorflag
+  integer, dimension(100) :: h1, h2,ad
   integer, dimension(5000) :: hbondpartners
-  integer, dimension(5000) :: acryhbond
+  integer, dimension(5000) :: acryhbond, siteloc
   real :: ang, dOO, dOx, dHX1, dHX2, dHO1, dHO2
   real :: rOXmax, rOOmax, rHOmax, rHXmax, angmax,anghohmax
   real, dimension(3) :: L
@@ -284,8 +316,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
   !   These are 1 if hbonded to an acryl
   !   or 0 otherwise
 
-
   hbondpartners=0
+  acrydonorflag=0 ! 0 turns of considering acryl donations
 
   ! H-bond Criteria 
   rOXmax = 3.5; rHXmax = 2.45; angmax =30
@@ -337,7 +369,7 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
           acryindex=(j-1)*acry_natms + i + nwater*2
           drOX(:)=rO(k,:)-racryl(i,j,:) - L(:)*anint((rO(k,:)-racryl(i,j,:))/L(:))
           dOX = sqrt(dot_product(drOX,drOX))
-          if  ( dOX < rOXmax ) then
+          if  ( dOX < rOXmax .and. ad(i) .eq. 1) then
             ! Checks Water Donations to Acryl
             drHX1(:)=r1(k,:)-racryl(i,j,:) - L(:)*anint((r1(k,:)-racryl(i,j,:))/L(:))
             drHX2(:)=r2(k,:)-racryl(i,j,:) - L(:)*anint((r2(k,:)-racryl(i,j,:))/L(:))
@@ -352,6 +384,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
                 oh1 = acryindex
                 acryhbond(oh1index)=1 ! Water molecule is hbonded to acry
                 acryhbond(oh2index)=1 ! Water molecule is Hbonded to acry
+                siteloc(oh1index)=i ! Stores which acryl atom nearby
+                siteloc(oh2index)=i ! Stores which acryl atom nearby
               endif
             endif
             if ( dHX2 .lt. rHXmax ) then
@@ -361,35 +395,39 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
                 oh2 = acryindex
                 acryhbond(oh1index)=1 ! Water molecule is hbonded to acry
                 acryhbond(oh2index)=1 ! Water " ...  "
+                siteloc(oh1index)=i ! Stores which acryl atom nearby
+                siteloc(oh2index)=i ! Stores which acryl atom nearby
               endif
             endif
           endif !  ( dOX < rOXmax )
           ! Checks Acryl Donations to Water
-          if ( h1(i) .ne. 0) then
-            drHO1(:)=racryl(h1(i),j,:) - rO(k,:) - L(:)*anint((racryl(h1(i),j,:) -rO(k,:))/L(:))
-            ! Water H, Acryl X (O or N) distance
-            dHO1=sqrt(dot_product(drHO1,drHO1))
-            if ( dHO1 .lt. rHXmax ) then
-              eho1(:) = drHO1(:)/dHO1
-              ang = acosd(dot_product(-eox,eho1))
-              if ( ang < angmax ) then
-                hbondpartners(acryindex)=k
-                acryhbond(acryindex)=1 ! Water molecule is hbonded toacry
+          if (acrydonorflag .eq. 1) then
+            if ( h1(i) .ne. 0) then
+              drHO1(:)=racryl(h1(i),j,:) - rO(k,:) - L(:)*anint((racryl(h1(i),j,:) -rO(k,:))/L(:))
+              ! Water H, Acryl X (O or N) distance
+              dHO1=sqrt(dot_product(drHO1,drHO1))
+              if ( dHO1 .lt. rHXmax ) then
+                eho1(:) = drHO1(:)/dHO1
+                ang = acosd(dot_product(-eox,eho1))
+                if ( ang < angmax ) then
+                  hbondpartners(acryindex)=k
+                  acryhbond(acryindex)=1 ! Water molecule is hbonded toacry
+                endif
               endif
             endif
-          endif
-          if ( h2(i) .ne. 0) then
-            drHO2(:)=racryl(h2(i),j,:) - rO(k,:) - L(:)*anint((racryl(h2(i),j,:)-rO(k,:))/L(:))
-            dHO2=sqrt(dot_product(drHO2,drHO2))
-            if ( dHO2 .lt. rHXmax ) then
-              eho2(:) = drHO2(:)/dHO2
-              ang = acosd(dot_product(-eox,eho2))
-              if ( ang < angmax ) then
-                hbondpartners(acryindex)=k
-                acryhbond(acryindex)=1 ! Water molecule is hbonded to acry
+            if ( h2(i) .ne. 0) then
+              drHO2(:)=racryl(h2(i),j,:) - rO(k,:) - L(:)*anint((racryl(h2(i),j,:)-rO(k,:))/L(:))
+              dHO2=sqrt(dot_product(drHO2,drHO2))
+              if ( dHO2 .lt. rHXmax ) then
+                eho2(:) = drHO2(:)/dHO2
+                ang = acosd(dot_product(-eox,eho2))
+                if ( ang < angmax ) then
+                  hbondpartners(acryindex)=k
+                  acryhbond(acryindex)=1 ! Water molecule is hbonded to acry
+                endif
               endif
             endif
-          endif
+          endif ! End Acryl donations to water
         enddo ! j nacryl
       endif ! crtisq
     enddo ! i acry_natms loop
