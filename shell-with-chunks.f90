@@ -136,8 +136,9 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   integer, dimension(100) :: ad, h1, h2
   real, dimension (100) :: critsq
 
-  integer, allocatable :: crptmp(:),acrycrptmp(:)
+  integer, allocatable :: crptmp(:),acrycrptmp(:), bulkcrptmp(:)
   real, allocatable :: crp(:), acrycrp(:), c2(:), c2tmp(:)
+  real, allocatable :: bulkcrp(:),bulkc2(:),bulkc2tmp(:)
   real, allocatable :: acryc2(:), acryc2tmp(:)
   integer, allocatable :: hbondlist(:,:), acryhbondlist(:,:), sitelist(:,:)
   real, allocatable :: elist(:,:,:)
@@ -149,6 +150,7 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   allocate( acryc2(ncorr), acryc2tmp(ncorr) )
   allocate( elist(ncorr,5000,3) )
   allocate( sitecrp(ncorr,acry_natms), sitecrptmp(ncorr,acry_natms) )
+  allocate( bulkcrp(ncorr), bulkcrptmp(ncorr), bulkc2(ncorr), bulkc2tmp(ncorr) )
   write(*,*) "Beginning TCF Loop"
   write(*,*) "Ncorr", ncorr
   write(*,*) "ntos", ntos
@@ -157,17 +159,20 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   hbondlist=0; acryhbondlist=0; elist=0.0;sitelist=0
   crp=0; acrycrp=0
   c2=0; acryc2=0
+  bulkcrp=0; bulkc2=0
   sitecrp=0; siteloc=0; sitelist=0
   count_crp=0
   count_acryc2tos=0;  count_acrycrptos = 0
   
   ! Loop over time origins
+  open(20,file="counts.dat")
   do to=1,ntos
     torigin = (to-1)*sep
     write(*,*) "Time Origin Reached:",to
 
     ! Zeros for time origin
     crptmp=0;acrycrptmp=0; c2tmp=0; acryc2tmp=0 ! These need to be zero every time
+    bulkcrptmp=0; bulkc2tmp=0
     sitecrptmp=0
     laststep=1
     if (to .ne. 1) then ! Shifts by sep
@@ -217,7 +222,13 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
     ! Calc CRP Correlation
     crp(:)=crp(:)+real(crptmp(:))/real(count_crp)
     acrycrp(:)=acrycrp(:)+real(acrycrptmp(:))/real(count_acrycrp)
+    ! Calculate  bulk waters
+    bulkc2tmp(:)  = c2tmp(:) - acryc2tmp(:)
+    bulkcrptmp(:) = crptmp(:)-acrycrptmp(:)
+    bulkc2(:) = bulkc2(:) + real(bulkc2tmp(:))/real(nwater*2 - count_acryc2)
+    bulkcrp(:) = bulkcrp(:) + real(bulkcrptmp(:))/real(count_crp-count_acrycrp)
     if ( acrycrptmp(1) .ne. 0.0 )   count_acrycrptos = count_acrycrptos + 1
+    write(20,*) t, nwater*2, count_acryc2, count_crp, count_acrycrp
     do k=1,acry_natms
       if (sitecrptmp(1,k) .ne. 0 ) then 
         sitecrp(:,k) = sitecrp(:,k) + real(sitecrptmp(:,k))/real(sitecrptmp(1,k))
@@ -232,6 +243,8 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   ! CRP Norm
   crp(:)=real(crp(:))/real(ntos)
   acrycrp(:)=real(acrycrp(:))/real(count_acrycrptos)
+  bulkc2(:) =real(bulkc2(:))/real(ntos)
+  bulkcrp(:)=real(bulkcrp(:))/real(ntos)
   do k=1,acry_natms
     if ( sitecrp(1,k) .ne. 0 ) sitecrp(:,k)=real(sitecrp(:,k))/real(sitecrp(1,k))
   enddo
@@ -241,18 +254,25 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   open(15,file="c2.dat")
   open(16,file="hbondc2.dat")
   open(17,file="sitecrp.dat")
+  open(18,file="bulkcrp.dat")
+  open(19,file="bulkc2.dat")
   do t=1,ncorr
     write(13,*) t, crp(t)
     write(14,*) t, acrycrp(t)
     write(15,*) t, c2(t) 
     write(16,*) t, acryc2(t)
     write(17,fmt='(100F12.5)') real(t), (sitecrp(t,k), k=1,acry_natms)
+    write(18,*) t, bulkcrp(t)
+    write(19,*) t, bulkc2(t)
   enddo
   close(13)
   close(14)
   close(15)
   close(16)
   close(17)
+  close(18)
+  close(19)
+  close(20)
   write(*,*) "End TCF Loop"
 
 End Subroutine
