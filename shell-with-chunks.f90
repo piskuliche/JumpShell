@@ -67,15 +67,18 @@ Program JumpSolv
 
 End Program   
 
-Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq,ad,h1,h2, hbondpartners, acryhbonds,e,siteloc)
+Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq,ad,h1,h2, hbondpartners, acryhbonds,acryhbondohs,e,siteloc,insolv,h2o_count)
   implicit none
   integer :: i, j, k
   integer :: sk, nacryl, acry_natms, nwater
   real    :: d1, d2
   character(len=3) :: ctmp
+
+  integer, dimension(1000) :: h2o_count
+  integer, dimension(5000) :: insolv
   
   integer, dimension(100) :: h1, h2, ad
-  integer, dimension(5000) :: hbondpartners,acryhbonds,siteloc
+  integer, dimension(5000) :: hbondpartners,acryhbonds,acryhbondohs,siteloc
 
   real, dimension (100) :: critsq
 
@@ -115,8 +118,8 @@ Subroutine Read_Frame(L,nacryl, acry_natms, nwater,critsq,ad,h1,h2, hbondpartner
     e(2*i-1,:) = e1(i,:)
     e(2*i,:) = e2(i,:)
   enddo
-  hbondpartners=0;acryhbonds=0
-  call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2,critsq,ad, hbondpartners,acryhbonds,siteloc)
+  hbondpartners=0;acryhbonds=0; acryhbondohs=0
+  call CheckHbonds(nacryl,nwater,acry_natms, L, rO, r1,r2,racryl, h1, h2,critsq,ad, hbondpartners,acryhbonds,acryhbondohs,siteloc,insolv,h2o_count)
 
 End Subroutine Read_Frame
 
@@ -127,9 +130,20 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   integer :: sk, nacryl, acry_natms, nwater
   integer :: count_crp
   integer :: count_acryc2, count_acryc2tos, count_acrycrp, count_acrycrptos
-  real :: dp
+  integer :: count_acryohcrp, count_acryohc2,count_acryohcrptos,count_acryohc2tos
+  real :: dp, p2val
   
-  integer, dimension(5000) :: hbondpartners, acryhbonds, init_hbonds,samehbond,laststep,siteloc
+  ! Solvation Shell
+  integer :: count_solvc2, count_neatc2,count_solvcrp, count_neatcrp
+  integer, dimension(1000) :: h2o_count
+  integer, dimension(5000) :: insolv
+  real, allocatable :: insolvlist(:,:)
+  real, allocatable :: solvc2(:), solvc2tmp(:), solvcrp(:), solvcrptmp(:)
+  real, allocatable :: neatc2(:), neatcrp(:)
+  integer, allocatable :: solvlist(:,:)
+  ! End Solvation Shell
+  
+  integer, dimension(5000) :: hbondpartners, acryhbonds,acryhbondohs, init_hbonds,samehbond,laststep,siteloc
   real, dimension(5000,3) :: e
   
   real, dimension(3) :: L
@@ -139,30 +153,45 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   integer, allocatable :: crptmp(:),acrycrptmp(:), bulkcrptmp(:)
   real, allocatable :: crp(:), acrycrp(:), c2(:), c2tmp(:)
   real, allocatable :: bulkcrp(:),bulkc2(:),bulkc2tmp(:)
-  real, allocatable :: acryc2(:), acryc2tmp(:)
-  integer, allocatable :: hbondlist(:,:), acryhbondlist(:,:), sitelist(:,:)
+  real, allocatable :: acryc2(:), acryc2tmp(:), acryohc2(:), acryohc2tmp(:), acryohcrp(:), acryohcrptmp(:)
+  integer, allocatable :: hbondlist(:,:), acryhbondlist(:,:),acryhbondohlist(:,:), sitelist(:,:)
   real, allocatable :: elist(:,:,:)
   real, allocatable :: sitecrp(:,:), sitecrptmp(:,:)
 
   allocate( hbondlist(ncorr,5000) )
-  allocate( acryhbondlist(ncorr,5000), sitelist(ncorr,5000) )
+  allocate( acryhbondlist(ncorr,5000), acryhbondohlist(ncorr,5000), sitelist(ncorr,5000) )
   allocate( crptmp(ncorr), acrycrptmp(ncorr), crp(ncorr), acrycrp(ncorr), c2tmp(ncorr), c2(ncorr) ) 
   allocate( acryc2(ncorr), acryc2tmp(ncorr) )
+  allocate( acryohc2(ncorr), acryohc2tmp(ncorr),acryohcrp(ncorr),acryohcrptmp(ncorr) )
   allocate( elist(ncorr,5000,3) )
   allocate( sitecrp(ncorr,acry_natms), sitecrptmp(ncorr,acry_natms) )
   allocate( bulkcrp(ncorr), bulkcrptmp(ncorr), bulkc2(ncorr), bulkc2tmp(ncorr) )
+  ! Allocate solvshell
+  allocate( solvc2(ncorr), solvc2tmp(ncorr), solvcrp(ncorr), solvcrptmp(ncorr) )
+  allocate( neatc2(ncorr), neatcrp(ncorr) )
+  allocate( solvlist(ncorr,5000) )
+  ! Print Passed Information
   write(*,*) "Beginning TCF Loop"
   write(*,*) "Ncorr", ncorr
   write(*,*) "ntos", ntos
   write(*,*) "sep", sep
   ! Zero values that need to be zeroed
-  hbondlist=0; acryhbondlist=0; elist=0.0;sitelist=0
+  hbondlist=0; acryhbondlist=0; acryhbondohlist=0
+  elist=0.0;sitelist=0
   crp=0; acrycrp=0
   c2=0; acryc2=0
+  acryohc2=0; acryohcrp=0
   bulkcrp=0; bulkc2=0
   sitecrp=0; siteloc=0; sitelist=0
   count_crp=0
   count_acryc2tos=0;  count_acrycrptos = 0
+  count_acryohc2tos=0;  count_acryohcrptos = 0
+
+  ! Zero Solvshell
+  solvc2=0.0; solvcrp=0.0
+  neatc2=0.0; neatcrp=0.0
+  solvlist=0
+  ! End Zero Solvshell
   
   ! Loop over time origins
   open(20,file="counts.dat")
@@ -172,23 +201,31 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
 
     ! Zeros for time origin
     crptmp=0;acrycrptmp=0; c2tmp=0; acryc2tmp=0 ! These need to be zero every time
+    acryohcrptmp=0; acryohc2tmp=0
     bulkcrptmp=0; bulkc2tmp=0
     sitecrptmp=0
+    solvc2tmp=0.0; solvcrptmp=0.0
     laststep=1
     if (to .ne. 1) then ! Shifts by sep
       hbondlist = cshift(hbondlist,sep,dim=1)
       acryhbondlist = cshift(acryhbondlist,sep,dim=1)
+      acryhbondohlist = cshift(acryhbondohlist,sep,dim=1)
       elist = cshift(elist,sep,dim=1)
       sitelist = cshift(sitelist,sep,dim=1)
+      solvlist = cshift(solvlist,sep,dim=1)
     endif
     count_acryc2=0; count_acrycrp=0; count_crp=0
+    count_acryohc2=0; count_acryohcrp=0
+    count_solvc2=0; count_solvcrp=0; count_neatc2=0; count_neatcrp=0
     do t=1,ncorr ! Loops over times
       if (to .eq. 1 .or. t .gt. ncorr-sep) then ! Either reads in the data
-        call Read_Frame(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, hbondpartners, acryhbonds,e,siteloc)
+        call Read_Frame(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, hbondpartners, acryhbonds,acryhbondohs,e,siteloc,insolv,h2o_count)
         elist(t,:,:)=e(:,:)
         hbondlist(t,:)=hbondpartners(:)
         acryhbondlist(t,:)=acryhbonds(:)
+        acryhbondohlist(t,:)=acryhbondohs(:)
         sitelist(t,:)=siteloc(:)
+        solvlist(t,:)=insolv(:)
       endif
       call CheckPartners(hbondlist(1,:),hbondlist(t,:),laststep,samehbond)
       laststep(:)=samehbond(:) ! Sets the previous step
@@ -197,16 +234,28 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
       do j=1,5000
         if (j .le. nwater*2) then
           dp = dot_product(elist(t,j,:),elist(1,j,:))
-          c2tmp(t) = c2tmp(t)+0.5*(3.0*dp**2.-1.0)
-          acryc2tmp(t) = acryc2tmp(t) + 0.5*(3.0*dp**2.-1.0)*acryhbondlist(1,j)
-          if ( t .eq. 1) count_acryc2=count_acryc2+acryhbondlist(1,j)
+          p2val = 0.5*(3.0*dp**2.-1)
+          c2tmp(t) = c2tmp(t)+p2val
+          acryc2tmp(t) = acryc2tmp(t) + p2val*acryhbondlist(1,j)
+          acryohc2tmp(t) = acryohc2tmp(t) + p2val*acryhbondohlist(1,j)
+          ! Solv Shell
+          solvc2tmp(t) = solvc2tmp(t) + p2val*solvlist(1,j)
+          if ( t .eq. 1) then
+            count_acryc2=count_acryc2+acryhbondlist(1,j)
+            count_acryohc2=count_acryohc2+acryhbondohlist(1,j)
+            count_solvc2=count_solvc2+solvlist(1,j)
+          endif
         endif
         if (samehbond(j) .eq. 1) then
           crptmp(t) = crptmp(t) + 1
           acrycrptmp(t) = acrycrptmp(t) + acryhbondlist(1,j)
+          acryohcrptmp(t) = acryohcrptmp(t) + acryhbondohlist(1,j)
+          solvcrptmp(t) = solvcrptmp(t) + solvlist(1,j)
           if ( t .eq. 1) then
             count_crp = count_crp + 1
             count_acrycrp = count_acrycrp + acryhbondlist(1,j)
+            count_acryohcrp = count_acryohcrp + acryhbondohlist(1,j)
+            count_solvcrp = count_solvcrp + solvlist(1,j)
           endif
           if (sitelist(t,j) .ne. 0) sitecrptmp(t,sitelist(t,j)) = sitecrptmp(t,sitelist(t,j)) + acryhbondlist(1,j)
         endif
@@ -218,16 +267,25 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
     ! Calc C2 Correlation 
     c2(:)=c2(:) + c2tmp(:)/(real(nwater)*2.0)
     acryc2(:)=acryc2(:) + acryc2tmp(:)/(real(count_acryc2))
+    acryohc2(:)=acryohc2(:) + acryohc2tmp(:)/(real(count_acryohc2))
+    ! Solv Shell
+    solvc2(:)=solvc2(:) + solvc2tmp(:)/(real(count_solvc2))
     if ( acryc2tmp(1) .ne. 0.0 ) count_acryc2tos = count_acryc2tos + 1
+    if ( acryohc2tmp(1) .ne. 0.0 ) count_acryohc2tos = count_acryohc2tos + 1
     ! Calc CRP Correlation
     crp(:)=crp(:)+real(crptmp(:))/real(count_crp)
     acrycrp(:)=acrycrp(:)+real(acrycrptmp(:))/real(count_acrycrp)
-    ! Calculate  bulk waters
-    bulkc2tmp(:)  = c2tmp(:) - acryc2tmp(:)
-    bulkcrptmp(:) = crptmp(:)-acrycrptmp(:)
-    bulkc2(:) = bulkc2(:) + real(bulkc2tmp(:))/real(nwater*2 - count_acryc2)
-    bulkcrp(:) = bulkcrp(:) + real(bulkcrptmp(:))/real(count_crp-count_acrycrp)
+    acryohcrp(:)=acryohcrp(:)+real(acryohcrptmp(:))/real(count_acryohcrp)
+    ! Solv Shell 
+    solvcrp(:)=solvcrp(:)+real(solvcrptmp(:))/real(count_solvcrp)
+    ! Calculate  "bulk" waters -> Note: "bulk" is all waters not hbonded
+    bulkc2(:) = bulkc2(:) + real(c2tmp(:) - acryc2tmp(:))/real(nwater*2 - count_acryc2)
+    bulkcrp(:) = bulkcrp(:) + real(crptmp(:)-acrycrptmp(:))/real(count_crp-count_acrycrp)
+    ! Calculate "neat" waters -> all waters not hbonded OR in 1st solv shell
+    neatc2(:) = neatc2(:) + real(c2tmp(:) - acryc2tmp(:)-solvc2tmp(:))/real(nwater*2 - count_acryc2 - count_solvc2)
+    neatcrp(:) = neatcrp(:) + real(crptmp(:) - acrycrptmp(:)-solvcrptmp(:))/real(count_crp - count_acrycrp - count_solvcrp)
     if ( acrycrptmp(1) .ne. 0.0 )   count_acrycrptos = count_acrycrptos + 1
+    if ( acryohcrptmp(1) .ne. 0.0 )   count_acryohcrptos = count_acryohcrptos + 1
     write(20,*) t, nwater*2, count_acryc2, count_crp, count_acrycrp
     do k=1,acry_natms
       if (sitecrptmp(1,k) .ne. 0 ) then 
@@ -237,14 +295,21 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   enddo
   write(*,*) "Preparing to Dump Final Values"
   ! C2 Norm
-  write(*,*) count_acryc2tos, acryc2(1), count_acrycrptos, acrycrp(1)
   c2(:)=c2(:)/real(ntos)
   acryc2(:)=acryc2(:)/real(count_acryc2tos)
+  acryohc2(:)=acryohc2(:)/real(count_acryohc2tos)
   ! CRP Norm
   crp(:)=real(crp(:))/real(ntos)
   acrycrp(:)=real(acrycrp(:))/real(count_acrycrptos)
+  acryohcrp(:)=real(acryohcrp(:))/real(count_acryohcrptos)
   bulkc2(:) =real(bulkc2(:))/real(ntos)
   bulkcrp(:)=real(bulkcrp(:))/real(ntos)
+  ! Solv Shell
+  solvc2(:) = real(solvc2(:))/real(ntos)
+  solvcrp(:) = real(solvcrp(:))/real(ntos)
+  neatc2(:) = real(neatc2(:))/real(ntos)
+  write(*,*) neatcrp(1)
+  neatcrp(:) = real(neatcrp(:))/real(ntos)
   do k=1,acry_natms
     if ( sitecrp(1,k) .ne. 0 ) sitecrp(:,k)=real(sitecrp(:,k))/real(sitecrp(1,k))
   enddo
@@ -256,6 +321,12 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
   open(17,file="sitecrp.dat")
   open(18,file="bulkcrp.dat")
   open(19,file="bulkc2.dat")
+  open(30,file="hbond_oh_c2.dat")
+  open(31,file="hbond_oh_crp.dat")
+  open(32,file="solvc2.dat")
+  open(33,file="solvcrp.dat")
+  open(34,file="neatc2.dat")
+  open(35,file="neatcrp.dat")
   do t=1,ncorr
     write(13,*) t, crp(t)
     write(14,*) t, acrycrp(t)
@@ -264,6 +335,12 @@ Subroutine TCFLoop(L, nacryl, acry_natms, nwater, critsq,ad,h1,h2, ntos,sep,ncor
     write(17,fmt='(100F12.5)') real(t), (sitecrp(t,k), k=1,acry_natms)
     write(18,*) t, bulkcrp(t)
     write(19,*) t, bulkc2(t)
+    write(30,*) t, acryohc2(t)
+    write(31,*) t, acryohcrp(t)
+    write(32,*) t, solvc2(t)
+    write(33,*) t, solvcrp(t)
+    write(34,*) t, neatc2(t)
+    write(35,*) t, neatcrp(t)
   enddo
   close(13)
   close(14)
@@ -311,7 +388,7 @@ Subroutine CheckPartners(init_partners,t_partners,laststep,samehbonds)
 End Subroutine
 
 
-Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq,ad, hbondpartners,acryhbond,siteloc)
+Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2,critsq,ad, hbondpartners,acryhbond,acryhbondoh,siteloc, insolv, h2o_count)
   implicit none
   integer :: i, j, k, cnt, presenthbnd,acryindex
   integer :: nacryl, nwater, acry_natms
@@ -319,8 +396,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
   integer :: acrydonorflag
   integer, dimension(100) :: h1, h2,ad
   integer, dimension(5000) :: hbondpartners
-  integer, dimension(5000) :: acryhbond, siteloc
-  real :: ang, dOO, dOx, dHX1, dHX2, dHO1, dHO2
+  integer, dimension(5000) :: acryhbond, acryhbondoh, siteloc
+  real :: ang, dOO, dOx, dHX1, dHX2, dHO1, dHO2, dOXsq
   real :: rOXmax, rOOmax, rHOmax, rHXmax, angmax,anghohmax
   real, dimension(3) :: L
   real, dimension(100,100,3) :: racryl
@@ -328,6 +405,11 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
   real, dimension(1000,3) :: rO, r1, r2
   real, dimension(3) :: drOX, drHX1, drHX2,drHO1, drHO2, drOO
   real, dimension(3) ::eox, ehx1, ehx2, eho1, eho2, eoo
+
+  !Solvation Shell Addition
+  integer, dimension(1000) :: h2o_count
+  integer, dimension(5000) :: insolv
+  real, dimension(1000,100) :: h2o_mindist
   ! This code calculates hbonding and stores it
   ! It stores this information in hbondpartners
   ! It calculates all the hydrogen bonds in the system (water-water,
@@ -343,10 +425,14 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
   rOXmax = 3.5; rHXmax = 2.45; angmax =30
   rOOmax = 3.1; rHOmax = 2.0; anghohmax = 20
   ! END H-bond Criteria
-
+  ! SolvShell
+  h2o_mindist=50.0
+  insolv=0
+  h2o_count=0
+  ! End solvshell
 
   hbondpartners=0
-  acryhbond=0
+  acryhbond=0; acryhbondoh=0 ! acryhbond stores all ohs for hbonded waters, acryhbondoh stores only hbonded oh
   do k=1,nwater
     oh1index=2*k-1
     oh2index=2*k
@@ -388,7 +474,8 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
           ! This index starts past the number of OHs available
           acryindex=(j-1)*acry_natms + i + nwater*2
           drOX(:)=rO(k,:)-racryl(i,j,:) - L(:)*anint((rO(k,:)-racryl(i,j,:))/L(:))
-          dOX = sqrt(dot_product(drOX,drOX))
+          dOXsq = dot_product(drOX,drOX)
+          dOX = sqrt(dOXsq)
           if  ( dOX < rOXmax .and. ad(i) .eq. 1) then
             ! Checks Water Donations to Acryl
             drHX1(:)=r1(k,:)-racryl(i,j,:) - L(:)*anint((r1(k,:)-racryl(i,j,:))/L(:))
@@ -404,6 +491,7 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
                 oh1 = acryindex
                 acryhbond(oh1index)=1 ! Water molecule is hbonded to acry
                 acryhbond(oh2index)=1 ! Water molecule is Hbonded to acry
+                acryhbondoh(oh1index)=1 ! OH1 is hbonded to acryl
                 siteloc(oh1index)=i ! Stores which acryl atom nearby
                 siteloc(oh2index)=i ! Stores which acryl atom nearby
               endif
@@ -415,11 +503,26 @@ Subroutine CheckHbonds(nacryl, nwater, acry_natms, L, rO, r1, r2, racryl, h1, h2
                 oh2 = acryindex
                 acryhbond(oh1index)=1 ! Water molecule is hbonded to acry
                 acryhbond(oh2index)=1 ! Water " ...  "
+                acryhbond(oh2index)=1 ! OH2 is hbonded to acryl
                 siteloc(oh1index)=i ! Stores which acryl atom nearby
                 siteloc(oh2index)=i ! Stores which acryl atom nearby
               endif
             endif
           endif !  ( dOX < rOXmax )
+          ! Solv Shell Part Note: water->k, acryatm->i, nacry->j
+          ! Only adds if not hydrogen bonded to the acryl
+          if (dOXsq .lt. critsq(i) .and. acryhbond(oh1index)+acryhbond(oh2index) .eq. 0) then
+            ! Checks if for particular acryl, is closest water
+            if (dOXsq .lt. h2o_mindist(k,j)) then
+              ! Only adds if mindist is at original setting
+              if (h2o_mindist(k,j) .eq. 50.0 ) then
+                h2o_count(k) = h2o_count(k) + 1 
+              endif
+              insolv(oh1index) = 1
+              insolv(oh2index) = 1
+              h2o_mindist(k,j)=dOXsq
+            endif
+          endif
           ! Checks Acryl Donations to Water
           if (acrydonorflag .eq. 1) then
             if ( h1(i) .ne. 0) then
